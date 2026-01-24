@@ -11,7 +11,12 @@ apps/ui/dist/
 .DS_Store
 Thumbs.db
 
-# App data
+# App data (A2 logical dirs)
 data/
 models/
 temp/
+
+# Local runtime data (dev only)
+.localdata/
+.localtemp/
+*.db
