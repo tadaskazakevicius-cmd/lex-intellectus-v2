@@ -165,7 +165,23 @@ class HNSWPackIndex:
         Returns (chunk_id, distance) pairs ordered by best match first.
         For cosine space, distance is the hnswlib cosine distance (lower is better).
         """
-        v = self._ensure_float32_2d(vector, self.dim)
+        # Ensure query vector is 2D float32 contiguous.
+        v = np.asarray(vector, dtype=np.float32)
+        if v.ndim == 1:
+            v = v.reshape(1, -1)
+        if v.ndim != 2 or v.shape[1] != self.dim:
+            raise ValueError(f"Expected vector shape (N,{self.dim}); got {v.shape}")
+        v = np.ascontiguousarray(v)
+
+        # Clamp k to the number of elements in the index.
+        get_count = getattr(self.index, "get_current_count", None)
+        n = int(get_count()) if callable(get_count) else int(len(self.label_to_chunk_id))
+        k = min(int(k), int(n))
+        if k <= 0:
+            return []
+
+        # hnswlib requires ef >= k at query time, otherwise it can fail when returning results.
+        self.index.set_ef(max(int(k), 50))
         labels, distances = self.index.knn_query(v, k=k)
 
         out: list[tuple[str, float]] = []
