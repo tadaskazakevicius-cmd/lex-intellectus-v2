@@ -12,12 +12,14 @@ from .paths import ensure_dirs, get_paths
 # ✅ FIX: relative import inside the lex_server package
 from .documents.api import router as documents_router
 from .caseframe.api import router as caseframe_router
+from .retrieval.api import router as retrieval_router
 
 app = FastAPI(title="Lex Intellectus Server", version=__version__)
 
 # Documents / cases API
 app.include_router(documents_router, prefix="/api")
 app.include_router(caseframe_router, prefix="/api")
+app.include_router(retrieval_router, prefix="/api")
 
 
 @app.get("/api/health")
