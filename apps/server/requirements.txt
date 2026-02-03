@@ -1,11 +1,24 @@
+# Web framework
 fastapi>=0.110
 uvicorn[standard]>=0.24
+
+# HTTP / multipart (uploads, TestClient)
+httpx>=0.28.0
+python-multipart>=0.0.9
+
+# Paths / platform
 platformdirs>=4.0
+
+# Data / validation
+jsonschema>=4.0
+
+# Numeric / vector search
 numpy>=1.26
 hnswlib>=0.8.0
-cryptography
-pypdf>=4.0
-python-docx>=1.1
-jsonschema>=4.0
-python-multipart>=0.0.9
-httpx>=0.28.0
+
+# Crypto / signing
+cryptography>=42.0
+
+# Document text extraction
+pypdf>=4.0.0
+python-docx>=1.1.0
