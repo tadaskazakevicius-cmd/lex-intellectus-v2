@@ -29,7 +29,7 @@ def _db_path() -> Path:
 
 
 @router.get("/cases/{case_id}/caseframe")
-def get_caseframe(case_id: str) -> JSONResponse | FileResponse:
+def get_caseframe(case_id: str):
     out_path = _default_out_path(case_id)
     if out_path.exists():
         return FileResponse(out_path, media_type="application/json")
