@@ -1,0 +1,4 @@
+PVM deklaracija FR0600.
+Tai testinis dokumentas.
+Cituojama eilute: "PVM".
+

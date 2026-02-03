@@ -9,7 +9,13 @@ from . import __version__
 from .audit import log_event
 from .paths import ensure_dirs, get_paths
 
+# ✅ FIX: relative import inside the lex_server package
+from .documents.api import router as documents_router
+
 app = FastAPI(title="Lex Intellectus Server", version=__version__)
+
+# Documents / cases API
+app.include_router(documents_router, prefix="/api")
 
 
 @app.get("/api/health")
@@ -47,7 +53,10 @@ def spa_root():
     spa_dir = _spa_dir()
     index = spa_dir / "index.html"
     if not index.exists():
-        return PlainTextResponse("UI not built yet. Build the SPA to enable the web UI.", status_code=200)
+        return PlainTextResponse(
+            "UI not built yet. Build the SPA to enable the web UI.",
+            status_code=200,
+        )
     return FileResponse(index)
 
 
@@ -73,4 +82,3 @@ def spa_fallback(full_path: str):
 
     # Client-side routes (no matching file) fall back to index.html
     return FileResponse(index)
-
