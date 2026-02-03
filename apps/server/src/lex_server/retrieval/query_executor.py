@@ -29,7 +29,7 @@ def execute_fts_plan(
     Execute multiple FTS queries from an E1 QueryPlan and aggregate results.
 
     Aggregation:
-    - base = 1 / (1 + bm25_score)     (bm25: lower is better)
+    - base = -bm25_score              (bm25: lower/more negative is better)
     - atom_score = atom.weight * base
     - per chunk:
         score = max(atom_score) across matches (not sum)
@@ -46,7 +46,7 @@ def execute_fts_plan(
     for atom in plan.atoms:
         hits = fts_search(conn, atom.text, top_n=per_atom, flt=flt)
         for h in hits:
-            base = 1.0 / (1.0 + float(h.bm25_score))
+            base = -float(h.bm25_score)
             atom_score = float(atom.weight) * base
             entry = agg.get(h.chunk_id)
             match_info = {
