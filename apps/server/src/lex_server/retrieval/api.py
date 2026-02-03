@@ -12,6 +12,7 @@ from .query_builder import QueryAtom, QueryPlan
 from .query_executor import execute_fts_plan
 from .vector_retrieval import VectorFilter, vector_retrieve
 from .vector_index import VectorIndex
+from .hybrid_retrieval import hybrid_retrieve
 
 
 router = APIRouter()
@@ -176,6 +177,57 @@ def retrieval_vector(req: VectorRequest) -> JSONResponse:
             {
                 "hits": [
                     {"chunk_id": h.chunk_id, "practice_doc_id": h.practice_doc_id, "distance": h.distance}
+                    for h in hits
+                ]
+            }
+        )
+    finally:
+        con.close()
+
+
+class HybridRequest(BaseModel):
+    query: str
+    top_n: int = Field(default=10, ge=1, le=100)
+    filters: FtsFilter | None = None
+    use_fts: bool = True
+    use_vector: bool = True
+
+
+@router.post("/retrieval/hybrid")
+def retrieval_hybrid(req: HybridRequest) -> JSONResponse:
+    dbp = _db_path()
+    if not dbp.exists():
+        raise HTTPException(status_code=404, detail="DB not found")
+
+    con = sqlite3.connect(dbp)
+    try:
+        con.execute("PRAGMA foreign_keys = ON;")
+        hits = hybrid_retrieve(
+            con,
+            req.query,
+            top_n=req.top_n,
+            filters=req.filters,
+            use_fts=req.use_fts,
+            use_vector=req.use_vector,
+        )
+        return JSONResponse(
+            {
+                "hits": [
+                    {
+                        "chunk_id": h.chunk_id,
+                        "practice_doc_id": h.practice_doc_id,
+                        "score": h.score,
+                        "sources": h.sources,
+                        "citations": [
+                            {
+                                "quote": c.quote,
+                                "start": c.start,
+                                "end": c.end,
+                                "source_url": c.source_url,
+                            }
+                            for c in h.citations
+                        ],
+                    }
                     for h in hits
                 ]
             }
