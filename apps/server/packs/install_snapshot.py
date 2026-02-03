@@ -97,6 +97,9 @@ def install_snapshot(snapshot_dir: Path, data_dir: Path, public_key_b64: str) ->
     staging_dir.mkdir(parents=True, exist_ok=False)
 
     _copy_tree(payload_dir, staging_dir)
+    # Keep snapshot manifest in installed pack root so deltas can validate "from".
+    shutil.copy2(snapshot_dir / "manifest.json", staging_dir / "manifest.json")
+    shutil.copy2(snapshot_dir / "manifest.sig", staging_dir / "manifest.sig")
 
     active_path = packs_dir / "ACTIVE.txt"
     tmp = packs_dir / "ACTIVE.txt.tmp"
