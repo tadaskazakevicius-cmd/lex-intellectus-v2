@@ -3,3 +3,4 @@ uvicorn[standard]>=0.24
 platformdirs>=4.0
 numpy>=1.26
 hnswlib>=0.8.0
+cryptography
