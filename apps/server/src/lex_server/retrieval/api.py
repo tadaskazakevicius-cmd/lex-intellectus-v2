@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from .fts_retrieval import FtsFilter, fts_search
 from .query_builder import QueryAtom, QueryPlan
 from .query_executor import execute_fts_plan
+from .vector_retrieval import VectorFilter, vector_retrieve
+from .vector_index import VectorIndex
 
 
 router = APIRouter()
@@ -120,6 +122,60 @@ def retrieval_fts_plan(req: FtsPlanRequest) -> JSONResponse:
                         "practice_doc_id": h.practice_doc_id,
                         "bm25_score": h.bm25_score,
                     }
+                    for h in hits
+                ]
+            }
+        )
+    finally:
+        con.close()
+
+
+class VectorRequest(BaseModel):
+    query: str
+    top_k: int = Field(default=10, ge=1, le=100)
+    filters: dict | None = None
+
+
+@router.post("/retrieval/vector")
+def retrieval_vector(req: VectorRequest) -> JSONResponse:
+    """
+    MVP vector endpoint.
+
+    NOTE:
+    This requires runtime configuration (model + index path). Tests use FakeEmbedder directly and do not
+    depend on this endpoint.
+    """
+    import os
+    from pathlib import Path
+
+    model_path = os.environ.get("LEX_EMBED_ONNX_MODEL")
+    index_path = os.environ.get("LEX_VECTOR_INDEX_PATH")
+    dim = os.environ.get("LEX_VECTOR_DIM")
+    if not model_path or not index_path or not dim:
+        raise HTTPException(
+            status_code=501,
+            detail="Vector retrieval not configured. Set LEX_EMBED_ONNX_MODEL, LEX_VECTOR_INDEX_PATH, LEX_VECTOR_DIM.",
+        )
+
+    from .embedder_onnx import OnnxEmbedder
+
+    embedder = OnnxEmbedder(Path(model_path))
+    index = VectorIndex.load(Path(index_path), dim=int(dim), space="cosine")
+
+    flt = VectorFilter(practice_doc_id=(req.filters or {}).get("practice_doc_id") if req.filters else None)
+
+    dbp = _db_path()
+    if not dbp.exists():
+        raise HTTPException(status_code=404, detail="DB not found")
+
+    con = sqlite3.connect(dbp)
+    try:
+        con.execute("PRAGMA foreign_keys = ON;")
+        hits = vector_retrieve(con, index, embedder, req.query, top_k=req.top_k, flt=flt)
+        return JSONResponse(
+            {
+                "hits": [
+                    {"chunk_id": h.chunk_id, "practice_doc_id": h.practice_doc_id, "distance": h.distance}
                     for h in hits
                 ]
             }
