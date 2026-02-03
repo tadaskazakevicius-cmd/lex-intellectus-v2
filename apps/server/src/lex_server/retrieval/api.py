@@ -17,6 +17,47 @@ from .vector_index import VectorIndex
 router = APIRouter()
 
 
+# Module-level cache for expensive resources (embedder and index)
+_cached_embedder: "OnnxEmbedder | None" = None
+_cached_index: "VectorIndex | None" = None
+_cached_index_config: tuple[str, int, str] | None = None  # (path, dim, space)
+
+
+def _get_embedder_and_index() -> tuple["OnnxEmbedder", "VectorIndex"]:
+    """
+    Lazily initialize and cache the embedder and vector index.
+    These are expensive to create (ONNX session + HNSW index loading).
+    """
+    import os
+    from pathlib import Path
+
+    global _cached_embedder, _cached_index, _cached_index_config
+
+    model_path = os.environ.get("LEX_EMBED_ONNX_MODEL")
+    index_path = os.environ.get("LEX_VECTOR_INDEX_PATH")
+    dim = os.environ.get("LEX_VECTOR_DIM")
+    space = os.environ.get("LEX_VECTOR_SPACE", "cosine")
+
+    if not model_path or not index_path or not dim:
+        raise ValueError(
+            "Vector retrieval not configured. Set LEX_EMBED_ONNX_MODEL, LEX_VECTOR_INDEX_PATH, LEX_VECTOR_DIM."
+        )
+
+    current_config = (index_path, int(dim), space)
+
+    # Initialize embedder if needed
+    if _cached_embedder is None:
+        from .embedder_onnx import OnnxEmbedder
+        _cached_embedder = OnnxEmbedder(Path(model_path))
+
+    # Initialize or re-initialize index if config changed
+    if _cached_index is None or _cached_index_config != current_config:
+        _cached_index = VectorIndex.load(Path(index_path), dim=int(dim), space=space)  # type: ignore[arg-type]
+        _cached_index_config = current_config
+
+    return _cached_embedder, _cached_index
+
+
 def _db_path() -> Path:
     local = Path.cwd() / ".localdata" / "app.db"
     if local.exists():
@@ -145,22 +186,10 @@ def retrieval_vector(req: VectorRequest) -> JSONResponse:
     This requires runtime configuration (model + index path). Tests use FakeEmbedder directly and do not
     depend on this endpoint.
     """
-    import os
-    from pathlib import Path
-
-    model_path = os.environ.get("LEX_EMBED_ONNX_MODEL")
-    index_path = os.environ.get("LEX_VECTOR_INDEX_PATH")
-    dim = os.environ.get("LEX_VECTOR_DIM")
-    if not model_path or not index_path or not dim:
-        raise HTTPException(
-            status_code=501,
-            detail="Vector retrieval not configured. Set LEX_EMBED_ONNX_MODEL, LEX_VECTOR_INDEX_PATH, LEX_VECTOR_DIM.",
-        )
-
-    from .embedder_onnx import OnnxEmbedder
-
-    embedder = OnnxEmbedder(Path(model_path))
-    index = VectorIndex.load(Path(index_path), dim=int(dim), space="cosine")
+    try:
+        embedder, index = _get_embedder_and_index()
+    except ValueError as e:
+        raise HTTPException(status_code=501, detail=str(e)) from e
 
     flt = VectorFilter(practice_doc_id=(req.filters or {}).get("practice_doc_id") if req.filters else None)
 

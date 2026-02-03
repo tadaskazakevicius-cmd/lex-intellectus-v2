@@ -133,14 +133,6 @@ def load_idmap(path: Path) -> dict[int, str]:
     return out
 
 
-def _l2_normalize_rows(x: np.ndarray) -> np.ndarray:
-    x = np.asarray(x, dtype=np.float32)
-    if x.ndim == 1:
-        x = x.reshape(1, -1)
-    denom = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
-    return x / denom
-
-
 def build_vector_index(
     conn: sqlite3.Connection,
     embedder: Any,
@@ -180,8 +172,7 @@ def build_vector_index(
     if vec0.ndim != 2 or vec0.shape[0] != len(texts0):
         raise ValueError(f"Unexpected embedder output shape: {vec0.shape}")
     dim = int(vec0.shape[1])
-    if space == "cosine":
-        vec0 = _l2_normalize_rows(vec0)
+    # Note: VectorIndex.add_items() handles L2 normalization for cosine space
 
     idx = VectorIndex(dim=dim, space=space)  # type: ignore[arg-type]
     idx.M = int(M)
@@ -208,8 +199,6 @@ def build_vector_index(
             vec = np.asarray(embedder.embed_texts(texts), dtype=np.float32)
             if vec.shape != (len(texts), dim):
                 raise ValueError(f"Embedder output shape mismatch: got {vec.shape}, expected ({len(texts)},{dim})")
-            if space == "cosine":
-                vec = _l2_normalize_rows(vec)
             add_batch(pending, vec)
             processed += len(pending)
             if processed % 500 == 0:
@@ -221,8 +210,6 @@ def build_vector_index(
         vec = np.asarray(embedder.embed_texts(texts), dtype=np.float32)
         if vec.shape != (len(texts), dim):
             raise ValueError(f"Embedder output shape mismatch: got {vec.shape}, expected ({len(texts)},{dim})")
-        if space == "cosine":
-            vec = _l2_normalize_rows(vec)
         add_batch(pending, vec)
         processed += len(pending)
 
