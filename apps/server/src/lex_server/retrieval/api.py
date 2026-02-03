@@ -13,6 +13,7 @@ from .query_executor import execute_fts_plan
 from .vector_retrieval import VectorFilter, vector_retrieve
 from .vector_index import VectorIndex
 from .hybrid_retrieval import hybrid_retrieve
+from .persistence import create_run, load_run, load_run_hits, persist_run_results
 
 
 router = APIRouter()
@@ -230,6 +231,104 @@ def retrieval_hybrid(req: HybridRequest) -> JSONResponse:
                     }
                     for h in hits
                 ]
+            }
+        )
+    finally:
+        con.close()
+
+
+@router.post("/retrieval/hybrid_run")
+def retrieval_hybrid_run(req: HybridRequest) -> JSONResponse:
+    dbp = _db_path()
+    if not dbp.exists():
+        raise HTTPException(status_code=404, detail="DB not found")
+
+    con = sqlite3.connect(dbp)
+    try:
+        con.execute("PRAGMA foreign_keys = ON;")
+        hits = hybrid_retrieve(
+            con,
+            req.query,
+            top_n=req.top_n,
+            filters=req.filters,
+            use_fts=req.use_fts,
+            use_vector=req.use_vector,
+        )
+
+        run_id = create_run(
+            con,
+            query=req.query,
+            top_n=req.top_n,
+            filters=req.filters.model_dump() if req.filters is not None else None,
+            use_fts=req.use_fts,
+            use_vector=req.use_vector,
+            algo_version="hybrid_v1",
+        )
+        persist_run_results(con, run_id, hits)
+
+        return JSONResponse(
+            {
+                "run_id": run_id,
+                "hits": [
+                    {
+                        "chunk_id": h.chunk_id,
+                        "practice_doc_id": h.practice_doc_id,
+                        "score": h.score,
+                        "sources": h.sources,
+                        "citations": [
+                            {
+                                "quote": c.quote,
+                                "start": c.start,
+                                "end": c.end,
+                                "source_url": c.source_url,
+                            }
+                            for c in h.citations
+                        ],
+                    }
+                    for h in hits
+                ],
+            }
+        )
+    finally:
+        con.close()
+
+
+@router.get("/retrieval/runs/{run_id}")
+def retrieval_get_run(run_id: str) -> JSONResponse:
+    dbp = _db_path()
+    if not dbp.exists():
+        raise HTTPException(status_code=404, detail="DB not found")
+
+    con = sqlite3.connect(dbp)
+    try:
+        con.execute("PRAGMA foreign_keys = ON;")
+        try:
+            run = load_run(con, run_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Run not found")
+
+        hits = load_run_hits(con, run_id)
+        return JSONResponse(
+            {
+                "run": run,
+                "hits": [
+                    {
+                        "chunk_id": h.chunk_id,
+                        "practice_doc_id": h.practice_doc_id,
+                        "score": h.score,
+                        "sources": h.sources,
+                        "citations": [
+                            {
+                                "quote": c.quote,
+                                "start": c.start,
+                                "end": c.end,
+                                "source_url": c.source_url,
+                            }
+                            for c in h.citations
+                        ],
+                    }
+                    for h in hits
+                ],
             }
         )
     finally:
