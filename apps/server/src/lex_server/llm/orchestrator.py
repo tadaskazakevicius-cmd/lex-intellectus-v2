@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import json
+from dataclasses import replace as dc_replace
+from typing import Any
+
+from pydantic import ValidationError
+
+from .llama_cpp_runtime import LlamaCppRuntime, LlamaParams
+from .prompting import defense_prompt
+from .schemas import DefenseDirectionsResponse
+
+
+def _extract_json_object(raw: str) -> Any:
+    """
+    Best-effort extraction of a JSON object from an LLM string output.
+    Tries full parse first, then substring from first '{' to last '}'.
+    """
+
+    raw_s = (raw or "").strip()
+    if not raw_s:
+        raise json.JSONDecodeError("Empty string", raw_s, 0)
+
+    try:
+        return json.loads(raw_s)
+    except json.JSONDecodeError:
+        pass
+
+    i = raw_s.find("{")
+    j = raw_s.rfind("}")
+    if i == -1 or j == -1 or j <= i:
+        raise json.JSONDecodeError("No JSON object found", raw_s, 0)
+
+    candidate = raw_s[i : j + 1]
+    return json.loads(candidate)
+
+
+def _repair_prompt(*, schema_json: str, raw: str, error_summary: str) -> str:
+    return (
+        "You MUST output ONLY a single valid JSON object and nothing else.\n"
+        "No markdown. No code fences. No prose.\n"
+        "\n"
+        "The previous output did not match the required JSON schema.\n"
+        "Fix the JSON so it matches the schema EXACTLY (extra keys forbidden).\n"
+        "\n"
+        "REQUIRED JSON SCHEMA:\n"
+        f"{schema_json}\n"
+        "\n"
+        "ERROR SUMMARY:\n"
+        f"{error_summary}\n"
+        "\n"
+        "PREVIOUS RAW OUTPUT (for reference):\n"
+        "-----BEGIN RAW-----\n"
+        f"{raw}\n"
+        "-----END RAW-----\n"
+        "\n"
+        "Return the corrected JSON now.\n"
+    )
+
+
+def generate_defense_directions(
+    runtime: LlamaCppRuntime,
+    query: str,
+    citations: list[dict[str, Any]],
+    params: LlamaParams | None = None,
+) -> DefenseDirectionsResponse:
+    """
+    Orchestrate generation + JSON parsing + Pydantic schema validation.
+
+    Behavior:
+    - Prompt requires ONLY JSON.
+    - Parse JSON (robust extraction).
+    - Validate DefenseDirectionsResponse.
+    - If invalid: do 1 repair attempt.
+    - If still invalid: return schema-valid fallback with insufficient_authority=true.
+    """
+
+    schema_json = DefenseDirectionsResponse.schema_json()
+    prompt = defense_prompt(query=query, citations=citations, schema_json=schema_json)
+
+    # Helpful stop tokens (best-effort): discourage trailing commentary.
+    p_use = params
+    if p_use is not None:
+        stops = list(p_use.stop or [])
+        for tok in ("\n\n", "\n```", "\n---"):
+            if tok not in stops:
+                stops.append(tok)
+        p_use = dc_replace(p_use, stop=stops)
+
+    raw1 = runtime.generate(prompt, params=p_use)
+    try:
+        parsed1 = _extract_json_object(raw1)
+        return DefenseDirectionsResponse.model_validate(parsed1)
+    except (json.JSONDecodeError, ValidationError) as e1:
+        error_summary = str(e1)
+
+    repair = _repair_prompt(schema_json=schema_json, raw=raw1, error_summary=error_summary)
+    raw2 = runtime.generate(repair, params=p_use)
+    try:
+        parsed2 = _extract_json_object(raw2)
+        return DefenseDirectionsResponse.model_validate(parsed2)
+    except (json.JSONDecodeError, ValidationError) as e2:
+        info = [
+            "LLM output was not valid JSON per schema after repair attempt.",
+            f"first_error={error_summary[:500]}",
+            f"second_error={str(e2)[:500]}",
+        ]
+        return DefenseDirectionsResponse.fallback(missing_info=info)
