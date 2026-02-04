@@ -68,10 +68,10 @@ def test_orchestrator_parses_json_with_noise() -> None:
 
 
 def test_orchestrator_repair_on_invalid() -> None:
-    # First output is JSON but invalid schema (supporting_citations is empty).
+    # First output is JSON but invalid schema (title too short).
     invalid_schema = (
-        '{ "argument_paths": [ { "title": "Kryptis A", "claims": ["Teiginys 1"],'
-        ' "supporting_citations": [] } ],'
+        '{ "argument_paths": [ { "title": "A", "claims": ["Teiginys 1"],'
+        ' "supporting_citations": [ { "quote": "Q1", "chunk_id": "c1" } ] } ],'
         ' "counterarguments": [], "risks": [], "missing_info": [], "insufficient_authority": false }'
     )
     valid = (

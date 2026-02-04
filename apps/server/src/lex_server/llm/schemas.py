@@ -21,7 +21,8 @@ class ArgumentPath(BaseModel):
 
     title: str = Field(min_length=3)
     claims: list[str] = Field(min_length=1)
-    supporting_citations: list[CitationRef] = Field(min_length=1)
+    # Allow empty here; F4 enforcement removes claims without citations.
+    supporting_citations: list[CitationRef] = Field(default_factory=list)
 
 
 class DefenseDirectionsResponse(BaseModel):

@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from .enforcement import enforce_no_citation_no_claim
 from .llama_cpp_runtime import LlamaCppRuntime, LlamaParams
 from .prompting import defense_prompt
 from .schemas import DefenseDirectionsResponse
@@ -90,7 +91,8 @@ def generate_defense_directions(
     raw1 = runtime.generate(prompt, params=p_use)
     try:
         parsed1 = _extract_json_object(raw1)
-        return DefenseDirectionsResponse.model_validate(parsed1)
+        resp1 = DefenseDirectionsResponse.model_validate(parsed1)
+        return enforce_no_citation_no_claim(resp1)
     except (json.JSONDecodeError, ValidationError) as e1:
         error_summary = str(e1)
 
@@ -98,7 +100,8 @@ def generate_defense_directions(
     raw2 = runtime.generate(repair, params=p_use)
     try:
         parsed2 = _extract_json_object(raw2)
-        return DefenseDirectionsResponse.model_validate(parsed2)
+        resp2 = DefenseDirectionsResponse.model_validate(parsed2)
+        return enforce_no_citation_no_claim(resp2)
     except (json.JSONDecodeError, ValidationError) as e2:
         info = [
             "LLM output was not valid JSON per schema after repair attempt.",
