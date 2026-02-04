@@ -6,6 +6,8 @@ This server can call a locally bundled `llama.cpp` CLI binary **offline** (no in
 
 - `LEX_LLAMA_BIN`: full path to the `llama-cli` (or `main`) executable.
 - `LEX_MODEL_GGUF`: full path to a `.gguf` model file.
+- `LEX_LLAMA_BACKEND`: `auto|cpu|cuda|metal` (default: `auto`)
+- `LEX_LLAMA_N_GPU_LAYERS`: integer, e.g. `9999` (default for GPU backends: `9999`)
 
 If `LEX_LLAMA_BIN` is not set, the runtime looks for:
 
