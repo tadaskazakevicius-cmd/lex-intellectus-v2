@@ -15,6 +15,10 @@ ALLOWED_MIMES = {
     "text/plain",
 }
 
+# Allow UUID-ish ids (we normalize more strictly below)
+_CASE_ID_ALLOWED_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
 
 def data_dir() -> Path:
     """
@@ -48,14 +52,39 @@ def connect_db() -> sqlite3.Connection:
     return con
 
 
-_SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
-
-
 def sanitize_filename(name: str) -> str:
     name = (name or "upload.bin").strip()
     name = name.replace("\\", "_").replace("/", "_")
     name = _SAFE_NAME_RE.sub("_", name)
     return name or "upload.bin"
+
+
+def normalize_case_id(case_id: str) -> str:
+    """
+    Make case_id safe for filesystem paths (Windows included).
+
+    Common bug: case_id arrives like '\"<uuid>\"' or '"<uuid>"'.
+    We strip surrounding quotes, remove backslashes, and forbid path chars.
+    """
+    s = (case_id or "").strip()
+
+    # Strip surrounding single/double quotes repeatedly
+    for _ in range(3):
+        if (s.startswith('"') and s.endswith('"')) or (s.startswith("'") and s.endswith("'")):
+            s = s[1:-1].strip()
+
+    # Remove backslashes often coming from \"...\" representations
+    s = s.replace("\\", "").strip()
+
+    # Forbid path separators / drive colon etc.
+    if any(ch in s for ch in ["/", "\\", ":", "*", "?", "<", ">", "|"]):
+        raise ValueError(f"Invalid case_id for filesystem: {case_id!r}")
+
+    # Basic charset restriction
+    if not _CASE_ID_ALLOWED_RE.match(s):
+        raise ValueError(f"Invalid case_id format: {case_id!r}")
+
+    return s
 
 
 def detect_mime(filename: str, content_type_header: str | None) -> str:
@@ -75,12 +104,14 @@ def detect_mime(filename: str, content_type_header: str | None) -> str:
 
 def docs_dir(case_id: str) -> Path:
     # G1: store uploads under data_dir/cases/{case_id}/uploads
-    return data_dir() / "cases" / case_id / "uploads"
+    cid = normalize_case_id(case_id)
+    return data_dir() / "cases" / cid / "uploads"
 
 
 def final_relpath(case_id: str, sha256_hex: str, original_name: str) -> str:
+    cid = normalize_case_id(case_id)
     safe = sanitize_filename(original_name)
-    rel = Path("cases") / case_id / "uploads" / f"{sha256_hex}__{safe}"
+    rel = Path("cases") / cid / "uploads" / f"{sha256_hex}__{safe}"
     return rel.as_posix()
 
 
@@ -186,11 +217,13 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
     Ingest UploadFile into data_dir/cases/{case_id}/uploads and insert into DB.
     Dedupes by UNIQUE(case_id, sha256_hex) (if the DB has that unique index/constraint).
     """
+    cid = normalize_case_id(case_id)
+
     original_name = upload.filename or "upload.bin"
     mime = detect_mime(original_name, getattr(upload, "content_type", None))
     ensure_allowed_or_415(mime, original_name)
 
-    ddir = docs_dir(case_id)
+    ddir = docs_dir(cid)
     ddir.mkdir(parents=True, exist_ok=True)
 
     safe = sanitize_filename(original_name)
@@ -210,10 +243,12 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
             f.write(b)
 
     sha = h.hexdigest()
-    rel = final_relpath(case_id, sha, original_name)
+    rel = final_relpath(cid, sha, original_name)
 
     final_path = data_dir() / rel
     final_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Move temp -> final (same disk move is atomic-ish)
     os.replace(tmp_path, final_path)
 
     con = connect_db()
@@ -222,7 +257,7 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
             try:
                 return _insert_row(
                     con,
-                    case_id=case_id,
+                    case_id=cid,
                     original_name=original_name,
                     mime=mime,
                     size_bytes=size,
@@ -230,7 +265,7 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
                     storage_relpath=rel,
                 )
             except sqlite3.IntegrityError:
-                existing = _fetch_existing(con, case_id, sha)
+                existing = _fetch_existing(con, cid, sha)
 
                 # Remove the newly created file if this was a dup.
                 try:
@@ -246,6 +281,8 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
 
 
 def list_case_documents(con: sqlite3.Connection, case_id: str) -> list[dict]:
+    cid = normalize_case_id(case_id)
+
     rows = con.execute(
         """
         SELECT
@@ -257,7 +294,7 @@ def list_case_documents(con: sqlite3.Connection, case_id: str) -> list[dict]:
         WHERE case_id = ?
         ORDER BY id DESC;
         """,
-        (case_id,),
+        (cid,),
     ).fetchall()
 
     return [
