@@ -109,7 +109,11 @@ def resolve_db_path() -> Path:
 
     legacy = _server_root() / ".localdata" / "app.db"
     if not primary.exists() and legacy.exists():
-        shutil.copyfile(legacy, primary)
+        try:
+            shutil.copyfile(legacy, primary)
+        except Exception as e:
+            # If legacy is locked/unreadable (common on Windows), do not fail migrations.
+            print(f"[migrate] WARNING: failed to import legacy db from {legacy}: {e}")
 
     return primary
 
