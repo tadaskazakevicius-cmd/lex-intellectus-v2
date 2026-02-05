@@ -23,3 +23,7 @@ temp/
 
 # Disabled migrations / scratch
 *.sql.disabled
+
+# Local debug scripts
+apps/server/check_db.py
+
