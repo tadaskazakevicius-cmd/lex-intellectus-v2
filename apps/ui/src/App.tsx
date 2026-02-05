@@ -1,24 +1,36 @@
+import { CaseDetailPage } from "./pages/CaseDetail";
+import { NewCasePage } from "./pages/NewCase";
+import { navigate, useRoute } from "./router";
+
 export function App() {
+  const route = useRoute();
+
   return (
     <div className="page">
       <header className="header">
-        <div className="brand">Lex Intellectus</div>
-        <div className="muted">Project base (A1–A3)</div>
+        <div className="brand" role="button" tabIndex={0} onClick={() => navigate("/")}>
+          Lex Intellectus
+        </div>
+        <div className="muted">
+          <a className="link" href="/cases/new" onClick={(e) => (e.preventDefault(), navigate("/cases/new"))}>
+            Nauja byla
+          </a>
+        </div>
       </header>
 
-      <main className="card">
-        <h1>It works.</h1>
-        <p className="muted">
-          This SPA is served from the FastAPI server with an <code>index.html</code> fallback for
-          client-side routing.
-        </p>
-
-        <ul>
-          <li>
-            <span className="label">Health:</span> <code>/api/health</code>
-          </li>
-        </ul>
-      </main>
+      {route.name === "cases_new" ? <NewCasePage /> : null}
+      {route.name === "case_detail" ? <CaseDetailPage caseId={route.caseId} /> : null}
+      {route.name === "home" ? (
+        <main className="card">
+          <h1>Pradžia</h1>
+          <p className="muted">MVP: sukurk bylą ir įkelk dokumentus.</p>
+          <div className="actions">
+            <button className="btn" onClick={() => navigate("/cases/new")}>
+              Nauja byla
+            </button>
+          </div>
+        </main>
+      ) : null}
     </div>
   );
 }
