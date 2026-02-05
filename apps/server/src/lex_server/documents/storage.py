@@ -6,8 +6,8 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-
 
 ALLOWED_MIMES = {
     "application/pdf",
@@ -16,15 +16,27 @@ ALLOWED_MIMES = {
 }
 
 
-def root_dir() -> Path:
-    return Path.cwd()
-
-
 def data_dir() -> Path:
-    return root_dir() / ".localdata"
+    """
+    A2: Always store app data under OS-agnostic data_dir.
+    """
+    from ..paths import get_paths
+
+    return get_paths().data_dir
 
 
 def db_path() -> Path:
+    """
+    A2: Always use data_dir/app.db as the primary DB location.
+
+    Optional override:
+      - LEX_DB_PATH: absolute or relative path (relative to current working dir)
+    """
+    override = os.environ.get("LEX_DB_PATH", "").strip()
+    if override:
+        p = Path(override)
+        return p if p.is_absolute() else (Path.cwd() / p)
+
     return data_dir() / "app.db"
 
 
@@ -62,12 +74,13 @@ def detect_mime(filename: str, content_type_header: str | None) -> str:
 
 
 def docs_dir(case_id: str) -> Path:
-    return data_dir() / "user_docs" / case_id
+    # G1: store uploads under data_dir/cases/{case_id}/uploads
+    return data_dir() / "cases" / case_id / "uploads"
 
 
 def final_relpath(case_id: str, sha256_hex: str, original_name: str) -> str:
     safe = sanitize_filename(original_name)
-    rel = Path("user_docs") / case_id / f"{sha256_hex}__{safe}"
+    rel = Path("cases") / case_id / "uploads" / f"{sha256_hex}__{safe}"
     return rel.as_posix()
 
 
@@ -93,19 +106,28 @@ class IngestResult:
     sha256_hex: str
     storage_relpath: str
     deduped: bool
+    status: str
+    uploaded_at_utc: str
+    error: str | None
 
 
 def _fetch_existing(con: sqlite3.Connection, case_id: str, sha256_hex: str) -> IngestResult | None:
     row = con.execute(
         """
-        SELECT id, case_id, original_name, mime, size_bytes, sha256_hex, storage_relpath
+        SELECT
+          id, case_id, original_name, mime, size_bytes, sha256_hex, storage_relpath,
+          COALESCE(status, 'queued') AS status,
+          created_at_utc,
+          error
         FROM case_documents
         WHERE case_id = ? AND sha256_hex = ?
         """,
         (case_id, sha256_hex),
     ).fetchone()
+
     if not row:
         return None
+
     return IngestResult(
         id=int(row[0]),
         case_id=str(row[1]),
@@ -115,6 +137,9 @@ def _fetch_existing(con: sqlite3.Connection, case_id: str, sha256_hex: str) -> I
         sha256_hex=str(row[5]),
         storage_relpath=str(row[6]),
         deduped=True,
+        status=str(row[7]),
+        uploaded_at_utc=str(row[8]),
+        error=(str(row[9]) if row[9] is not None else None),
     )
 
 
@@ -128,13 +153,19 @@ def _insert_row(
     sha256_hex: str,
     storage_relpath: str,
 ) -> IngestResult:
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
     cur = con.execute(
         """
-        INSERT INTO case_documents(case_id, original_name, mime, size_bytes, sha256_hex, storage_relpath)
-        VALUES (?, ?, ?, ?, ?, ?);
+        INSERT INTO case_documents(
+          case_id, original_name, mime, size_bytes, sha256_hex, storage_relpath,
+          status, created_at_utc, updated_at_utc
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?);
         """,
-        (case_id, original_name, mime, int(size_bytes), sha256_hex, storage_relpath),
+        (case_id, original_name, mime, int(size_bytes), sha256_hex, storage_relpath, now, now),
     )
+
     return IngestResult(
         id=int(cur.lastrowid),
         case_id=case_id,
@@ -144,13 +175,16 @@ def _insert_row(
         sha256_hex=sha256_hex,
         storage_relpath=storage_relpath,
         deduped=False,
+        status="queued",
+        uploaded_at_utc=now,
+        error=None,
     )
 
 
 async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
     """
-    Ingest UploadFile into `.localdata/user_docs/<case_id>/...` and insert into DB.
-    Dedupes by UNIQUE(case_id, sha256_hex).
+    Ingest UploadFile into data_dir/cases/{case_id}/uploads and insert into DB.
+    Dedupes by UNIQUE(case_id, sha256_hex) (if the DB has that unique index/constraint).
     """
     original_name = upload.filename or "upload.bin"
     mime = detect_mime(original_name, getattr(upload, "content_type", None))
@@ -165,6 +199,7 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
 
     h = hashlib.sha256()
     size = 0
+
     with tmp_path.open("wb") as f:
         while True:
             b = await upload.read(1024 * 1024)
@@ -176,6 +211,7 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
 
     sha = h.hexdigest()
     rel = final_relpath(case_id, sha, original_name)
+
     final_path = data_dir() / rel
     final_path.parent.mkdir(parents=True, exist_ok=True)
     os.replace(tmp_path, final_path)
@@ -184,7 +220,7 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
     try:
         with con:
             try:
-                res = _insert_row(
+                return _insert_row(
                     con,
                     case_id=case_id,
                     original_name=original_name,
@@ -193,17 +229,68 @@ async def ingest_uploadfile(case_id: str, upload) -> IngestResult:
                     sha256_hex=sha,
                     storage_relpath=rel,
                 )
-                return res
             except sqlite3.IntegrityError:
                 existing = _fetch_existing(con, case_id, sha)
+
                 # Remove the newly created file if this was a dup.
                 try:
                     final_path.unlink()
                 except FileNotFoundError:
                     pass
+
                 if existing:
                     return existing
                 raise
     finally:
         con.close()
 
+
+def list_case_documents(con: sqlite3.Connection, case_id: str) -> list[dict]:
+    rows = con.execute(
+        """
+        SELECT
+          id, case_id, original_name, mime, size_bytes, sha256_hex, storage_relpath,
+          COALESCE(status, 'queued') AS status,
+          created_at_utc,
+          error
+        FROM case_documents
+        WHERE case_id = ?
+        ORDER BY id DESC;
+        """,
+        (case_id,),
+    ).fetchall()
+
+    return [
+        {
+            "id": int(r[0]),
+            "case_id": str(r[1]),
+            "original_name": str(r[2]),
+            "mime": str(r[3]),
+            "size_bytes": int(r[4]),
+            "sha256": str(r[5]),
+            "storage_relpath": str(r[6]),
+            "status": str(r[7]),
+            "uploaded_at_utc": str(r[8]),
+            "error": (str(r[9]) if r[9] is not None else None),
+        }
+        for r in rows
+    ]
+
+
+def set_document_status(
+    con: sqlite3.Connection,
+    document_id: int,
+    *,
+    status: str,
+    error: str | None = None,
+) -> None:
+    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    with con:
+        con.execute(
+            """
+            UPDATE case_documents
+            SET status = ?, error = ?, updated_at_utc = ?
+            WHERE id = ?;
+            """,
+            (status, error, now, int(document_id)),
+        )

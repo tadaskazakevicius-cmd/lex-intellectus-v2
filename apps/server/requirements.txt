@@ -2,9 +2,11 @@
 fastapi>=0.110
 uvicorn[standard]>=0.24
 
-# HTTP / multipart (uploads, TestClient)
-httpx>=0.28.0
+# Multipart uploads (required by FastAPI for UploadFile/Form)
 python-multipart>=0.0.9
+
+# HTTP client (used for integrations/tests; keep in runtime if server uses it)
+httpx>=0.28.0
 
 # Paths / platform
 platformdirs>=4.0

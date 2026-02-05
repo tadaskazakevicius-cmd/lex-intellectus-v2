@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+
+from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
 from .audit import log_event
 from .paths import ensure_dirs, get_paths
 
 # ✅ FIX: relative import inside the lex_server package
+from .cases.api import router as cases_router
 from .documents.api import router as documents_router
 from .caseframe.api import router as caseframe_router
 from .retrieval.api import router as retrieval_router
@@ -17,9 +21,24 @@ from .retrieval.api import router as retrieval_router
 app = FastAPI(title="Lex Intellectus Server", version=__version__)
 
 # Documents / cases API
+app.include_router(cases_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(caseframe_router, prefix="/api")
 app.include_router(retrieval_router, prefix="/api")
+
+# Dev-friendly CORS (UI dev server). Prefer proxy, but allow local origins if needed.
+_cors_origins = (os.environ.get("LEX_CORS_ORIGINS") or "").strip()
+origins = [o.strip() for o in _cors_origins.split(",") if o.strip()] if _cors_origins else [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/api/health")

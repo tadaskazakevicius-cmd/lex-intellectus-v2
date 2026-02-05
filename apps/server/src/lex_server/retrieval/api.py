@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -15,27 +16,95 @@ from .vector_index import VectorIndex
 from .hybrid_retrieval import hybrid_retrieve
 from .persistence import create_run, load_run, load_run_hits, persist_run_results
 
-
 router = APIRouter()
 
 
 def _db_path() -> Path:
-    local = Path.cwd() / ".localdata" / "app.db"
-    if local.exists():
-        return local
+    """
+    DB path resolution:
+    1) Optional override: LEX_DB_PATH
+    2) Primary: get_paths().data_dir / "app.db"
+    3) Legacy: if .localdata/app.db exists and primary is missing, copy once to primary
+    """
+    override = os.environ.get("LEX_DB_PATH", "").strip()
+    if override:
+        p = Path(override)
+        return p if p.is_absolute() else (Path.cwd() / p)
+
     from ..paths import get_paths
 
-    return get_paths().data_dir / "app.db"
+    primary = get_paths().data_dir / "app.db"
+    primary.parent.mkdir(parents=True, exist_ok=True)
+
+    legacy = Path.cwd() / ".localdata" / "app.db"
+    if not primary.exists() and legacy.exists():
+        primary.write_bytes(legacy.read_bytes())
+
+    return primary
+
+
+def _require_existing_file(p: Path, *, env_name: str) -> Path:
+    if not p.exists():
+        raise HTTPException(
+            status_code=501,
+            detail=f"{env_name} points to missing path: {str(p)}",
+        )
+    if not p.is_file():
+        raise HTTPException(
+            status_code=501,
+            detail=f"{env_name} must be a FILE path, got directory: {str(p)}",
+        )
+    return p
+
+
+def _resolve_vector_index_path(raw: str) -> Path:
+    """
+    LEX_VECTOR_INDEX_PATH can be either:
+    - a direct file path to the HNSW index
+    - OR a directory, in which case we try common filenames inside it
+    """
+    p = Path(raw)
+
+    # If direct file path
+    if p.exists() and p.is_file():
+        return p
+
+    # If directory: try common index filenames
+    if p.exists() and p.is_dir():
+        candidates = [
+            "index.bin",
+            "hnsw.index",
+            "vector.index",
+            "vectors.index",
+            "index.hnsw",
+            "hnswlib.index",
+        ]
+        for name in candidates:
+            cand = p / name
+            if cand.exists() and cand.is_file():
+                return cand
+
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Vector index directory provided but no index file found. "
+                f"Directory: {str(p)}. "
+                "Expected one of: " + ", ".join(candidates) + ". "
+                "Set LEX_VECTOR_INDEX_PATH to the actual index FILE path."
+            ),
+        )
+
+    # Doesn't exist at all
+    raise HTTPException(
+        status_code=501,
+        detail=f"LEX_VECTOR_INDEX_PATH points to missing path: {str(p)}",
+    )
 
 
 class FtsRequest(BaseModel):
     query: str
     top_n: int = Field(default=10, ge=1, le=100)
     filters: FtsFilter | None = None
-
-
-class FtsResponse(BaseModel):
-    hits: list[dict]
 
 
 @router.post("/retrieval/fts")
@@ -94,7 +163,6 @@ def retrieval_fts_plan(req: FtsPlanRequest) -> JSONResponse:
     if not dbp.exists():
         raise HTTPException(status_code=404, detail="DB not found")
 
-    # Minimal conversion to internal QueryPlan/QueryAtom
     atoms: list[QueryAtom] = []
     for a in req.plan.atoms:
         if a.kind not in ("keywords", "phrase", "norm"):
@@ -144,25 +212,41 @@ def retrieval_vector(req: VectorRequest) -> JSONResponse:
     MVP vector endpoint.
 
     NOTE:
-    This requires runtime configuration (model + index path). Tests use FakeEmbedder directly and do not
-    depend on this endpoint.
+    This requires runtime configuration (model + index path).
     """
-    import os
-    from pathlib import Path
+    model_raw = os.environ.get("LEX_EMBED_ONNX_MODEL", "").strip()
+    index_raw = os.environ.get("LEX_VECTOR_INDEX_PATH", "").strip()
+    dim_raw = os.environ.get("LEX_VECTOR_DIM", "").strip()
 
-    model_path = os.environ.get("LEX_EMBED_ONNX_MODEL")
-    index_path = os.environ.get("LEX_VECTOR_INDEX_PATH")
-    dim = os.environ.get("LEX_VECTOR_DIM")
-    if not model_path or not index_path or not dim:
+    if not model_raw or not index_raw or not dim_raw:
         raise HTTPException(
             status_code=501,
             detail="Vector retrieval not configured. Set LEX_EMBED_ONNX_MODEL, LEX_VECTOR_INDEX_PATH, LEX_VECTOR_DIM.",
         )
 
+    # Validate dim
+    try:
+        dim = int(dim_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=501, detail=f"LEX_VECTOR_DIM must be int, got: {dim_raw!r}") from e
+
+    model_path = Path(model_raw)
+    model_path = _require_existing_file(model_path, env_name="LEX_EMBED_ONNX_MODEL")
+
+    index_file = _resolve_vector_index_path(index_raw)
+
     from .embedder_onnx import OnnxEmbedder
 
-    embedder = OnnxEmbedder(Path(model_path))
-    index = VectorIndex.load(Path(index_path), dim=int(dim), space="cosine")
+    embedder = OnnxEmbedder(model_path)
+
+    try:
+        index = VectorIndex.load(index_file, dim=dim, space="cosine")
+    except RuntimeError as e:
+        # This is typically: "Cannot open file" or corrupted index
+        raise HTTPException(
+            status_code=501,
+            detail=f"Failed to load vector index from {str(index_file)}: {str(e)}",
+        ) from e
 
     flt = VectorFilter(practice_doc_id=(req.filters or {}).get("practice_doc_id") if req.filters else None)
 
@@ -333,4 +417,3 @@ def retrieval_get_run(run_id: str) -> JSONResponse:
         )
     finally:
         con.close()
-
